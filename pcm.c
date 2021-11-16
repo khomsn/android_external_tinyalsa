@@ -364,7 +364,13 @@ static int pcm_hw_mmap_status(struct pcm *pcm) {
         pcm->mmap_status = NULL;
         goto mmap_error;
     }
+    /*
     if (pcm->flags & PCM_MMAP)
+        pcm->mmap_control->avail_min = pcm->config.avail_min;
+    else
+        pcm->mmap_control->avail_min = 1;
+*/
+    if (pcm->config.avail_min)
         pcm->mmap_control->avail_min = pcm->config.avail_min;
     else
         pcm->mmap_control->avail_min = 1;
@@ -378,7 +384,13 @@ mmap_error:
         return -ENOMEM;
     pcm->mmap_status = &pcm->sync_ptr->s.status;
     pcm->mmap_control = &pcm->sync_ptr->c.control;
+    /*
     if (pcm->flags & PCM_MMAP)
+        pcm->mmap_control->avail_min = pcm->config.avail_min;
+    else
+        pcm->mmap_control->avail_min = 1;
+*/
+    if (pcm->config.avail_min)
         pcm->mmap_control->avail_min = pcm->config.avail_min;
     else
         pcm->mmap_control->avail_min = 1;
@@ -472,8 +484,21 @@ int pcm_get_htimestamp(struct pcm *pcm, unsigned int *avail,
     hw_ptr = pcm->mmap_status->hw_ptr;
     if (pcm->flags & PCM_IN)
         frames = hw_ptr - pcm->mmap_control->appl_ptr;
-    else
+    else {
         frames = hw_ptr + pcm->buffer_size - pcm->mmap_control->appl_ptr;
+        if (frames < 0) {
+            frames = 64;
+            pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr - pcm->buffer_size + frames;
+        }
+        if (frames > pcm->buffer_size) {
+            if (pcm->mmap_control->appl_ptr <= pcm->buffer_size) {
+                frames = pcm->buffer_size - pcm->mmap_control->appl_ptr;
+            } else {
+                frames = pcm->buffer_size;
+            }
+            pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr + frames - pcm->buffer_size;
+        }
+    }
 
     if (frames < 0)
         frames += pcm->boundary;
@@ -1089,10 +1114,18 @@ static inline int pcm_mmap_playback_avail(struct pcm *pcm)
 
     avail = pcm->mmap_status->hw_ptr + pcm->buffer_size - pcm->mmap_control->appl_ptr;
 
-    if (avail < 0)
-        avail += pcm->boundary;
-    else if (avail > (int)pcm->boundary)
-        avail -= pcm->boundary;
+    if (avail <= 0) {
+        avail = 64;
+        pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr + avail - pcm->buffer_size;
+    }
+    else if (avail > (int)pcm->buffer_size) {
+        if (pcm->mmap_control->appl_ptr <= pcm->buffer_size) {
+            avail = pcm->buffer_size - pcm->mmap_control->appl_ptr;
+        } else {
+            avail = pcm->buffer_size;
+        }
+        pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr + avail - pcm->buffer_size;
+    }
 
     return avail;
 }
@@ -1178,9 +1211,10 @@ int pcm_state(struct pcm *pcm)
 
 int pcm_set_avail_min(struct pcm *pcm, int avail_min)
 {
+/*
     if ((~pcm->flags) & (PCM_MMAP | PCM_NOIRQ))
         return -ENOSYS;
-
+*/
     pcm->config.avail_min = avail_min;
     return 0;
 }
@@ -1281,7 +1315,7 @@ int pcm_mmap_transfer(struct pcm *pcm, const void *buffer, unsigned int bytes)
                     time = (pcm->config.avail_min - avail) / pcm->noirq_frames_per_msec;
 
                 err = pcm_wait(pcm, time);
-                if (err < 0) {
+                if ((err < 0) && !(err == -EPIPE && (pcm->flags & PCM_OUT))) {
                     pcm->prepared = 0;
                     pcm->running = 0;
                     oops(pcm, errno, "wait error: hw 0x%x app 0x%x avail 0x%x\n",
