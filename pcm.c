@@ -486,17 +486,20 @@ int pcm_get_htimestamp(struct pcm *pcm, unsigned int *avail,
         frames = hw_ptr - pcm->mmap_control->appl_ptr;
     else {
         frames = hw_ptr + pcm->buffer_size - pcm->mmap_control->appl_ptr;
-        if (frames < 0) {
-            frames = 64;
-            pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr - pcm->buffer_size + frames;
-        }
         if (frames > pcm->buffer_size) {
-            if (pcm->mmap_control->appl_ptr <= pcm->buffer_size) {
-                frames = pcm->buffer_size - pcm->mmap_control->appl_ptr;
+            if (pcm->mmap_control->appl_ptr >= pcm->buffer_size) {
+                frames = pcm->config.period_size;
             } else {
-                frames = pcm->buffer_size;
+                if ((pcm->boundary - pcm->mmap_status->hw_ptr) >=0  &&  (pcm->boundary - pcm->mmap_status->hw_ptr) < pcm->buffer_size) {
+                    frames = pcm->buffer_size - pcm->mmap_control->appl_ptr - (pcm->boundary - pcm->mmap_status->hw_ptr);
+                }
             }
-            pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr + frames - pcm->buffer_size;
+            pcm->mmap_status->hw_ptr =  pcm->mmap_control->appl_ptr - pcm->buffer_size + frames; 
+        }
+        if (frames < 0) {
+            frames += pcm->boundary;
+            frames = frames % pcm->buffer_size;
+            pcm->mmap_status->hw_ptr =  pcm->mmap_control->appl_ptr - pcm->buffer_size + frames; 
         }
     }
 
@@ -1110,23 +1113,34 @@ int pcm_stop(struct pcm *pcm)
 
 static inline int pcm_mmap_playback_avail(struct pcm *pcm)
 {
-    int avail;
-
+    int avail, avail_now;
+    static int avail_prev=0;
     avail = pcm->mmap_status->hw_ptr + pcm->buffer_size - pcm->mmap_control->appl_ptr;
-
-    if (avail <= 0) {
-        avail = 64;
-        pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr + avail - pcm->buffer_size;
-    }
-    else if (avail > (int)pcm->buffer_size) {
-        if (pcm->mmap_control->appl_ptr <= pcm->buffer_size) {
-            avail = pcm->buffer_size - pcm->mmap_control->appl_ptr;
+    
+    if (avail > pcm->buffer_size) {
+        if (pcm->mmap_control->appl_ptr >= pcm->buffer_size) {
+            avail = pcm->config.period_size;
         } else {
-            avail = pcm->buffer_size;
+            if ((pcm->boundary - pcm->mmap_status->hw_ptr) >=0  &&  (pcm->boundary - pcm->mmap_status->hw_ptr) < pcm->buffer_size) {
+                avail = pcm->buffer_size - pcm->mmap_control->appl_ptr - (pcm->boundary - pcm->mmap_status->hw_ptr);
+            }
         }
-        pcm->mmap_status->hw_ptr = pcm->mmap_control->appl_ptr + avail - pcm->buffer_size;
+        pcm->mmap_status->hw_ptr =  pcm->mmap_control->appl_ptr - pcm->buffer_size + avail; 
     }
-
+	if (avail < 0) {
+		avail += pcm->boundary;
+        avail = avail % pcm->buffer_size;
+        pcm->mmap_status->hw_ptr =  pcm->mmap_control->appl_ptr - pcm->buffer_size + avail; 
+    }
+    avail_now = avail;
+    if ((avail_prev - avail_now) > pcm->config.period_size){
+        avail_now = avail_prev - pcm->config.period_size;
+        if (avail_now >= 0 && avail_now <= pcm->buffer_size) {
+            avail = avail_now;
+        }
+    }
+    avail_prev = avail;
+    
     return avail;
 }
 
